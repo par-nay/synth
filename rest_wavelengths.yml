@@ -1,0 +1,7 @@
+# Table from 
+# [1] Morton, D. C., “Atomic Data for Resonance Absorption Lines. III. Wavelengths Longward of the Lyman Limit for the Elements Hydrogen to Gallium”, The Astrophysical Journal Supplement Series, vol. 149, no. 1, IOP, pp. 205–238, 2003. doi:10.1086/377639.
+
+# Values are in angstroms (A)
+
+'H_lya': 1215.67  # Lyman-alpha
+'H_lyb': 1025.72  # Lyman-beta
