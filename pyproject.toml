@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synth"
+version = "0.1.0"
+description = "Synthesis of Transmission from Hydrodynamical simulations (SynTH)"
+authors = [
+  { name = "Parth Nayak", email = "parth3e8@gmail.com" }
+]
+dependencies = [
+  # List any runtime dependencies here
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "black",
+]
+
+[tool.setuptools]
+packages = ["synth"]
+
+[tool.setuptools.package-dir]
+"" = "."
