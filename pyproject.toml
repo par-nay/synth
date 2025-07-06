@@ -11,6 +11,10 @@ authors = [
 ]
 dependencies = [
   # List any runtime dependencies here
+  "scipy",
+  "numpy",
+  "h5py",
+  "pyyaml",
 ]
 
 [project.optional-dependencies]

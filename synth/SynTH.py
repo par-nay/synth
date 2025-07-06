@@ -3,16 +3,18 @@
 
 # This module provides utilities for synthesizing Lya transmission spectra from hydrodynamic simulations 
 
-
+import os
 import numpy as np
 import h5py
 import yaml
 # from numpy.fft import rfft,rfftfreq
 from scipy.special import erf, voigt_profile
 from scipy.integrate import simpson
-import atomic_rates as AR
-from constants import *
+import synth.atomic_rates as AR
+from synth.constants import *
 from scipy.interpolate import interp1d, RectBivariateSpline
+
+cwd = os.path.dirname(__file__)
 
 
 def cosmology(hfilepath):
@@ -197,7 +199,8 @@ class IonizationEquilibrium:
         self.X          = X
         self.Y          = Y 
         if TREECOOL is None: 
-            TREECOOL    = 'TREECOOL_ONO16_C000_T632.txt'
+            TREECOOL   = os.path.join(cwd, 'TREECOOL_ONO16_C000_T632.txt')
+            # TREECOOL    = 'TREECOOL_ONO16_C000_T632.txt'
         Gamma_table     = np.loadtxt(TREECOOL)
         Gamma_table[:,0] = 10**(Gamma_table[:,0]) - 1
         ind             = np.argmin(np.abs(Gamma_table[:,0] - self.z))
@@ -756,9 +759,11 @@ class Lyman:
         self.Hz       = self.IonEq.Hz
         self. X       = X
         self. Y       = Y
-        with open('oscillator_strengths.yml', 'r') as f:
+        f_lu_path     = os.path.join(cwd, "oscillator_strengths.yml")
+        lammbda0_path = os.path.join(cwd, "rest_wavelengths.yml")
+        with open(f_lu_path, 'r') as f:
             self.f_lu_table = yaml.safe_load(f)
-        with open('rest_wavelengths.yml', 'r') as f:
+        with open(lammbda0_path, 'r') as f:
             self.lambda_0_table = yaml.safe_load(f)
 
 
@@ -811,9 +816,9 @@ class Lyman:
             tau (ndarray):            resonant optical depth
             v_h_skewer (ndarray):     Hubble flow velocity of the output spectrum (in km/s), if return_v_h_skewer is True
         """
-        f_lu_transition     = self.f_lu_table[f'{element}_{transition}']
-        lambda_0_transition = self.lambda_0_table[f'{element}_{transition}'] # in Angstroms
-        C0 = np.pi * q_e**2 * f_lu_transition * (lambda_0_transition * 1E-8) / (m_e * c_light * self.Hz)     # overall constant factor
+        f_lu     = self.f_lu_table[f'{element}_{transition}']
+        lambda_0 = self.lambda_0_table[f'{element}_{transition}'] # in Angstroms
+        C0 = np.pi * q_e**2 * f_lu * (lambda_0 * 1E-8) / (m_e * c_light * self.Hz)     # overall constant factor
         if n_neutral is None:
             if element == 'H':
                 n_neutral  = self.Hydrogen.eval_HI(rho_b, T, mode = nH1_mode, n_iter_iterative = n_iter_iterative)[0]    # number density of HI in cm^-3
@@ -825,7 +830,7 @@ class Lyman:
 
         profile       = profile.lower()
         sigma_Doppler = np.sqrt(kB * T / mH)
-        gamma_Lorentz = 2. * np.pi * q_e**2 * f_lu / (3. * m_e * c_light * lambda_0) 
+        gamma_Lorentz = 2. * np.pi * q_e**2 * f_lu / (3. * m_e * c_light * (lambda_0 * 1E-8)) 
 
         frac_extend   = 0.25
         len_extend    = int(frac_extend * len(v_pec_los))
