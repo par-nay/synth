@@ -7,8 +7,9 @@ import os
 import numpy as np
 import h5py
 import yaml
-# from numpy.fft import rfft,rfftfreq
+from numpy.fft import rfft,rfftfreq
 from scipy.special import erf, voigt_profile
+from scipy.optimize import newton, root
 from scipy.integrate import simpson
 import synth.atomic_rates as AR
 from synth.constants import *
@@ -437,18 +438,19 @@ class IonizationEquilibrium:
         return self.fractions
 
 
-    def eval_fractions(self, rho_b, T):
+    def eval_fractions(self, rho_b, T, *root_args, **root_kwargs):
         """
-        Evaluate mass fractions of all the different neutral & ionized species of H and He
+        Evaluate mass fractions of all the different neutral & ionized species of H and He. Uses scipy.optimize.root to solve the coupled ionization equilibrium equations.
 
         Args:
             rho_b (float [ndarray]):    value of local baryon overdensity, i.e., (density / mean_density)
             T (float [ndarray]):        value of local gas temperature (in K) 
+            *root_args:                 additional positional arguments to pass to the scipy.optimize.root function
+            **root_kwargs:              additional keyword arguments to pass to the scipy.optimize.root function
 
         Returns:
             dict: Dictionary of all the mass fractions (floats). The keys are 'x_HI', 'x_HII', 'x_HeI', 'x_HeII', 'x_HeIII'.
         """
-        from scipy.optimize import root
         
         Rho_b   = rho_b * self.Omega_b * self.critical_density * (1+self.z)**3 
         A  	    = Rho_b * self.X / mH
@@ -491,12 +493,18 @@ class IonizationEquilibrium:
 
             init_vector  = np.array([1.0E-6, 1.0E-12, 1.0E-10])
             #results      = newton_krylov(cost, init_vector)
-            results_root = root(cost, init_vector, jac = Jacobian, method = 'hybr')
-            if not results_root.success:
-                raise UserWarning("Solving of coupled ionization equilibrium equations did not succeed! Please check the results for sanity.")
-            nHI   = results_root.x[0]
-            nHeI  = results_root.x[1]
-            nHeII = results_root.x[2]
+            root_methods = ["hybr", "lm", "krylov", "broyden1", "broyden2", "anderson", "linearmixing"]
+            m = 0
+            while m < len(root_methods):
+                self.results_root = root(cost, init_vector, jac = Jacobian, method = root_methods[m], *root_args, **root_kwargs)
+                if self.results_root.success:
+                    break
+                m += 1
+            if not self.results_root.success:
+                raise UserWarning(f"Solving of coupled ionization equilibrium equations did not succeed!. Please check the results for sanity.  Method used: {root_methods[m]} Reason: {self.results_root.message}")
+            nHI   = self.results_root.x[0]
+            nHeI  = self.results_root.x[1]
+            nHeII = self.results_root.x[2]
             return nHI, nHeI, nHeII
         
         GcHI    = self.Gamma_c_HI(T)
@@ -532,8 +540,6 @@ class IonizationEquilibrium:
         self.nHe = nHe
         self.fractions = {'x_HI': xHI, 'x_HII': xHII, 'x_HeI': xHeI, 'x_HeII': xHeII, 'x_HeIII': xHeIII}
         return self.fractions
-
-
 
 
 
@@ -766,6 +772,23 @@ class Lyman:
         with open(lammbda0_path, 'r') as f:
             self.lambda_0_table = yaml.safe_load(f)
 
+    def eval_tau_effective(self, element = 'H', transition = 'lya', fitter = "Turner24"):
+        """
+        Estimate the effective optical depth of the Lyman series absorption at the redshift of the simulation hfile
+
+        Args:
+            element (str):    element for which to estimate the effective optical depth, options: 'H', 'He'
+            transition (str): transition for which to estimate the effective optical depth, options: 'lya', 'lyb'
+            fitter (str):     fitting formula to use for estimating the effective optical depth. For H lya, options: 'Turner24' (from LyCAN - Turner et al. 2024), 'Becker13' (from Becker et al. 2013)
+
+        Returns:
+            tau_eff (float):    effective optical depth at the redshift of the simulation hfile
+        """
+        if (element == 'H') & (transition == 'lya'):
+            return tau_effective_lya(self.z, fitter = fitter)
+        else:
+            raise NotImplementedError(f"Effective optical depth for {element} {transition} is not implemented yet. Currently supported: 'H lya'.")
+
 
     def eval_tau_local(self, rho_b, T, n_neutral = None, element = 'H', transition = 'lya', nH1_mode = 'approximate', n_iter_iterative = 2):
         """
@@ -880,3 +903,162 @@ class Lyman:
             return tau, (v_h_skewer - v_h_skewer[0]) * 1E-5  # convert to km/s and return the Hubble flow velocity of the output spectrum
         else:
             return tau
+        
+
+    def eval_tau_rescale_factor(self, taus, element = 'H', transition = 'lya', F_mean_fitter = 'Turner24', tol = 1e-5, **newton_kwargs):
+        """
+        Estimate the scaling factor A to rescale the optical depth of th given resonant absorption to match the mean transmission in the given set of skewers to the observed value).
+
+        Args:
+            taus (ndarray):         optical depths of the resonant absorption (a set of skewers or a 3D box) to be rescaled
+            element (str):          element for which to estimate the scaling factor, options: 'H', 'He'
+            transition (str):       transition for which to estimate the scaling factor, options: 'lya', 'lyb'
+            F_mean_fitter (str):    fitting formula to use for estimating the observed mean transmission. For H lya, options: 'Turner24' (from LyCAN - Turner et al. 2024), 'Becker13' (from Becker et al. 2013)
+            tol (float):            tolerance for convergence of the root-finding
+            **newton_kwargs:        additional keyword arguments to pass to scipy.optimize.newton for root-finding
+
+        Returns:
+            float: scaling factor A
+        """
+        tau_eff_obs    = self.eval_tau_effective(element = element, transition = transition, fitter = F_mean_fitter)
+        F_mean_obs     = np.exp(-tau_eff_obs)    # observed mean transmission
+        F_mean_actual  = np.mean(np.exp(-taus))  # actual mean transmission in the skewers
+        tau_eff_actual = -np.log(F_mean_actual)  # effective optical depth in the skewers
+
+        rescaler       = TauRescaler(taus, F_mean_obs)
+        scaler         = rescaler.eval_scaler_A(init_guess = tau_eff_obs / tau_eff_actual, tol = tol, **newton_kwargs)
+        return scaler
+        
+
+
+class SummaryStats:
+    """
+    Class to compute summary statistics of a resonant attenuation (e.g. the Lyman-alpha forest) for a set of spectra
+    """
+    def __init__(self, taus, v_h_spectrum):
+        """
+        Initialize with a set of spectra to compute summary statistics for
+
+        Args:
+            taus (ndarray):         array of optical depths, shape (N_spectra, N_pixels)
+            v_h_spectrum (ndarray): 1d array of the hubble velocities along a spectrum in km/s, shape (N_pixels,)
+        """
+        self.taus       = taus
+        self.fluxes     = np.exp(-taus)  
+        self.v_h_skewer = v_h_spectrum
+
+    def compute_p1d(self, F_mean = None, per_spectrum = True):
+        """
+        Compute the 1d power spectrum for the given set of spectra (in units km/s)
+
+        Args:
+            F_mean (float, optional): the mean flux value to use for computing delta_F; if None, computes internally from the provided spectra
+            per_spectrum (bool, optional): whether to return a P1d estimate per input spectrum. If False, returns the average P1d estimate over all input spectra. Defaults to True.
+
+        Returns:
+            P1d (ndarray): estimated 1d power spectra for the given set of input spectra. If per_spectrum then shape (N_spectra, N_kmodes), else (N_kmodes,)
+            k (ndarray):   the Fourier modes for the given power spectrum estimate, in units s/km
+        """
+        if F_mean is None:
+            F_mean    = np.mean(self.fluxes)
+        delta_F   = self.fluxes / F_mean - 1.0
+        delta_FFT = rfft(delta_F)
+        delta_v_h = np.diff(self.v_h_skewer)[0]
+        N_pixels  = len(self.v_h_skewer)
+        length_vel = delta_v_h * N_pixels
+
+        k  = 2 * np.pi * rfftfreq(N_pixels, delta_v_h)
+        Pk = (delta_FFT.real**2 + delta_FFT.imag**2) * length_vel / N_pixels**2
+        if per_spectrum:
+            return Pk, k
+        else:
+            return np.mean(Pk, axis = 0), k
+        
+
+    def compute_flux_PDF(self, bins, density = False, per_spectrum = True):
+        """
+        Compute the probability density function (PDF) of the transmission for the given set of spectra
+
+        Args:
+            bins (int [ndarray]):           either number of uniform bins between 0 and 1 or the desired bin edges
+            density (bool, optional):       whether to return the normalized probability densities. If False, returns the histogram counts. Defaults to False.
+            per_spectrum (bool, optional):  whether to return a PDF per input spectrum. If False, returns the average PDF over all input spectra. Defaults to True.
+        """
+        if type(bins) == int:
+            bins = np.linspace(0,1,bins+1)
+        if per_spectrum:
+            hist = np.apply_along_axis(lambda a: np.histogram(a, bins = bins, density = density)[0], 1, self.fluxes)
+        else:
+            hist = np.histogram(self.fluxes, bins = bins, density = density)[0]
+        return hist
+
+
+
+
+def tau_effective_lya(z, fitter = 'Turner24'):
+    """
+    Estimate the effective optical depth of the Lyman-alpha absorption at the given redshift(s) using a fitting formula derived from measurements of Lyman-alpha mean transmission.
+
+    Args:
+        z (float [ndarray]):    redshift
+        fitter (str):           fitting formula to use, options: 'Turner24' (from LyCAN - Turner et al. 2024), 'Becker13' (from Becker et al. 2013)
+
+    Returns:
+        tau_eff (float [ndarray]):  effective optical depth at the given redshift(s)
+    """
+    if fitter == "Turner24":
+        tau_0   = 2.46E-3
+        gamma   = 3.62 
+        tau_eff = tau_0 * (1 + z)**gamma
+        return tau_eff
+    
+    elif fitter == "Becker13":
+        z_0   = 3.5
+        tau_0 = 0.751
+        beta  = 2.9
+        C     = -0.132
+        tau_eff = tau_0 * ((1 + z)/(1+z_0))**beta + C
+        return tau_eff
+    
+    else:
+        raise ValueError("Invalid fitter for tau_effective_lya().")
+    
+
+class TauRescaler:
+    """
+    Class to rescale the optical depth of a resonant absorption to match the mean transmission in the given set of skewers to a desired value (often the mean observed value).
+    """
+    def __init__(self, taus, F_mean_to_match):
+        """
+        Initialize with the taus of a set of skewers and the desired mean transmission to match the value in the set to.
+
+        Args:
+            taus (ndarray):          optical depths of the resonant absorption (a set of skewers or a 3D box)
+            F_mean_to_match (float): desired mean transmission to match
+        """
+        self.taus            = np.ravel(taus)
+        self.F_mean_to_match = F_mean_to_match
+        
+    def cost_func(self, A):
+        return np.mean(np.exp(-A*self.taus)) - self.F_mean_to_match
+    
+    def derivative_of_cost_func(self, A): # w.r.t. A
+        return np.mean( - self.taus * np.exp( - A*self.taus))
+    
+    def second_derivative_of_cost_func(self, A): # w.r.t. A
+        return np.mean( self.taus**2 * np.exp( - A*self.taus))
+    
+    def eval_scaler_A(self, init_guess = 0.8, tol = 1e-5, **newton_kwargs):
+        """
+        Evaluate the scaling factor A to rescale the optical depth to match the desired mean transmission.
+
+        Args:
+            init_guess (float):     initial guess for the scaling factor A
+            tol (float):            tolerance for convergence of the root-finding method
+            **newton_kwargs:        additional keyword arguments to pass to scipy.optimize.newton
+
+        Returns:
+            float: scaling factor A
+        """
+        A = newton(self.cost_func, init_guess, fprime = self.derivative_of_cost_func, fprime2 = self.second_derivative_of_cost_func, tol = tol, **newton_kwargs)
+        return A
