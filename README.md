@@ -111,5 +111,5 @@ PDF  = Summary.compute_flux_PDF(bins = bins, density = True, per_spectrum = Fals
 ```
 
 
-## Contact
+## Get in touch!
 The package is developed and maintained by Parth Nayak. Write an email to [parth3e8@gmail.com](mailto:parth3e8@gmail.com) to get in touch regarding any questions/issues.  
