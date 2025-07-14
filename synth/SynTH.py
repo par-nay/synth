@@ -1048,7 +1048,7 @@ class TauRescaler:
     def second_derivative_of_cost_func(self, A): # w.r.t. A
         return np.mean( self.taus**2 * np.exp( - A*self.taus))
     
-    def eval_scaler_A(self, init_guess = 0.8, tol = 1e-5, **newton_kwargs):
+    def eval_scalar_A(self, init_guess = 0.8, tol = 1e-5, **newton_kwargs):
         """
         Evaluate the scaling factor A to rescale the optical depth to match the desired mean transmission.
 
