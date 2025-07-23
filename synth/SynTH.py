@@ -298,18 +298,21 @@ class IonizationEquilibrium:
     
 
 
-    def eval_fractions_iteratively(self, rho_b, T, n_iter = 2):
+    def eval_fractions_iteratively(self, rho_b, T, n_iter = 2, rhob_clip = 1e3):
         """
         Evaluate mass fractions of all the different neutral & ionized species of H and He iteratively
 
         Args:
             rho_b (float [ndarray]):    value of local baryon overdensity, i.e., (density / mean_density)
             T (float [ndarray]):        value of local gas temperature (in K)
-            n_iter (int):               number of iterations to perform for convergence
+            n_iter (int, optional):     number of iterations to perform for convergence
+            rhob_clip (float [ndarray], optional):  value to clip the baryon overdensities to. Default is 1e3. Provide if the simulations are not accurate enough to capture structure formation at high overdensities. Otherwise set it to `None` for the use of the full range of overdensities.
 
         Returns:
             dict: Dictionary of all the mass fractions (floats). The keys are 'x_HI', 'x_HII', 'x_HeI', 'x_HeII', 'x_HeIII'.
         """
+        if rhob_clip is not None:
+            rho_b[rho_b > rhob_clip] = rhob_clip
         Rho_b   = rho_b * self.Omega_b * self.critical_density * (1+self.z)**3 
         A  	    = Rho_b * self.X / mH
         B       = Rho_b * self.Y / (2. * mH)
@@ -364,94 +367,24 @@ class IonizationEquilibrium:
         self.nHe = nHe
         self.fractions = {'x_HI': xHI, 'x_HII': xHII, 'x_HeI': xHeI, 'x_HeII': xHeII, 'x_HeIII': xHeIII}
         return self.fractions
-    
-    
-    def eval_fractions_iteratively_with_convergence(self, rho_b, T, r_tol = 1e-5):
-        """
-        Evaluate mass fractions of all the different neutral & ionized species of H and He iteratively until converged
-
-        Args:
-            rho_b (float [ndarray]):    value of local baryon overdensity, i.e., (density / mean_density)
-            T (float [ndarray]):        value of local gas temperature (in K)
-            n_iter (int):               number of iterations to perform for convergence
-
-        Returns:
-            dict: Dictionary of all the mass fractions (floats). The keys are 'x_HI', 'x_HII', 'x_HeI', 'x_HeII', 'x_HeIII'.
-        """
-        Rho_b   = rho_b * self.Omega_b * self.critical_density * (1+self.z)**3 
-        A  	    = Rho_b * self.X / mH
-        B       = Rho_b * self.Y / (2. * mH)
-        nH      = A
-        nHe     = B / 2.
-
-        GcHI    = self.Gamma_c_HI(T)
-        GcHeI   = self.Gamma_c_HeI(T)
-        GcHeII  = self.Gamma_c_HeII(T)
-        
-        ArHII   = self.Alpha_r_HII(T)
-        ArHeII  = self.Alpha_r_HeII(T)
-        ArHeIII = self.Alpha_r_HeIII(T)
-        AdHeII  = self.Alpha_d_HeIII(T)
-        DHeII   = GcHeII + ArHeII + AdHeII
-
-        if type(T) is float or type(T) is np.float_:
-            GgHI   = self.HI_UV  
-            GgHeI  = self.HeI_UV 
-            GgHeII = self.HeII_UV 
-        elif type(T) is np.ndarray:
-            GgHI   = np.ones(T.shape) * self.HI_UV  #1.0E-12 
-            GgHeI  = np.ones(T.shape) * self.HeI_UV #1.0E-13 
-            GgHeII = np.ones(T.shape) * self.HeII_UV #1.0E-15 
-
-        ## First solve for xHeII under the assumption of complete ionization, i.e., x_HI = xHeI = 0.
-        a  = B*(ArHeIII+DHeII)/2.
-        b  = -(GgHeII + ArHeIII*(A+3*B/2) + DHeII*(A+B))
-        c  = ArHeIII * (A + B)
-        D  = b**2 - 4.*a*c 
-        self.xHeII  = (-b - np.sqrt(D))/(2.*a)  # this is the physically meaningful solution of the two solutions of the quadratic equation
-        self.xHeIII = 1. - self.xHeII
-        self.n_e    = A + B - B*self.xHeII/2.
-        self.xHI    = ArHII * self.n_e / ((ArHII + GcHI)*self.n_e + GgHI)
-        self.xHeI   = self.xHeII * self.n_e*(ArHeII + AdHeII)/(GcHeI*self.n_e + GgHeI)
-        self.n_e    = A + B - A*self.xHI - B*self.xHeI - B*self.xHeII/2.
-        self.xHI    = ArHII * self.n_e / ((ArHII + GcHI)*self.n_e + GgHI) # -------------> First iteration done.
-        self.xHII   = 1 - self.xHI
-
-        iter_id = 1
-        continue_iterating = True
-        while continue_iterating:
-            iter_id += 1
-            
-            self.xHeII  = self.xHeIII * ArHeIII*self.n_e / (GcHeII*self.n_e + GgHeII)
-            self.xHeI   = self.xHeII * self.n_e*(ArHeII + AdHeII)/(GcHeI*self.n_e + GgHeI)
-            self.xHeIII = 1. - self.xHeI - self.xHeII
-            self.n_e    = A + B - A*self.xHI - B*self.xHeI - B*self.xHeII/2.
-            xHI    = ArHII * self.n_e / ((ArHII + GcHI)*self.n_e + GgHI)
-            if np.all(np.abs(xHI/self.xHI - 1) < r_tol) & np.all((0<xHI) & (xHI<1)):
-                continue_iterating = False
-            self.xHI    = xHI
-            self.xHII   = 1 - self.xHI
-
-        self.nH  = nH 
-        self.nHe = nHe
-        self.fractions = {'x_HI': self.xHI, 'x_HII': self.xHII, 'x_HeI': self.xHeI, 'x_HeII': self.xHeII, 'x_HeIII': self.xHeIII}
-        return self.fractions
 
 
-    def eval_fractions(self, rho_b, T, *root_args, **root_kwargs):
+    def eval_fractions(self, rho_b, T, rhob_clip = 1e3, *root_args, **root_kwargs):
         """
         Evaluate mass fractions of all the different neutral & ionized species of H and He. Uses scipy.optimize.root to solve the coupled ionization equilibrium equations.
 
         Args:
             rho_b (float [ndarray]):    value of local baryon overdensity, i.e., (density / mean_density)
             T (float [ndarray]):        value of local gas temperature (in K) 
+            rhob_clip (float [ndarray], optional):  value to clip the baryon overdensities to. Default is 1e3. Provide if the simulations are not accurate enough to capture structure formation at high overdensities. Otherwise set it to `None` for the use of the full range of overdensities.
             *root_args:                 additional positional arguments to pass to the scipy.optimize.root function
             **root_kwargs:              additional keyword arguments to pass to the scipy.optimize.root function
 
         Returns:
             dict: Dictionary of all the mass fractions (floats). The keys are 'x_HI', 'x_HII', 'x_HeI', 'x_HeII', 'x_HeIII'.
         """
-        
+        if rhob_clip is not None:
+            rho_b[rho_b > rhob_clip] = rhob_clip
         Rho_b   = rho_b * self.Omega_b * self.critical_density * (1+self.z)**3 
         A  	    = Rho_b * self.X / mH
         B       = Rho_b * self.Y / (2. * mH)
@@ -574,12 +507,13 @@ class Hydrogen:
         self.Gamma_coll = self.IonEq.Gamma_c_HI
 
 
-    def eval_nH(self, rho_b):
+    def eval_nH(self, rho_b, rhob_clip = 1e3):
         """
         Estimate the total number density (in CGS) of all Hydrogen species, given a baryon overdensity rho_b
 
         Args:
-            rho_b (float [ndarray]): value of local baryon overdensity, i.e., (density / mean_density)
+            rho_b (float [ndarray]):                value of local baryon overdensity, i.e., (density / mean_density)
+            rhob_clip (float [ndarray], optional):  value to clip the baryon overdensities to. Default is 1e3. Provide if the simulations are not accurate enough to capture structure formation at high overdensities. Otherwise set it to `None` for the use of the full range of overdensities.
 
         Returns: 
             float [ndarray]: number density of H in cm^-3
@@ -587,12 +521,14 @@ class Hydrogen:
         try:
             nH    = self.IonEq.nH
         except:
+            if rhob_clip is not None:
+                rho_b[rho_b > rhob_clip] = rhob_clip
             Rho_b = rho_b * self.Omega_b * self.critical_density * (1 + self.z)**3
             nH    = Rho_b * self.X / mH 
         return nH
     
 
-    def eval_HI_approximately(self, rho_b, T):
+    def eval_HI_approximately(self, rho_b, T, rhob_clip = 1e3):
         """
         Estimate the number density (in CGS) and mass fraction of neutral Hydrogen, given a baryon overdensity and a gas temperature.
         This is under the approximation that (at this appropriately low redshift) Helium is fully doubly ionized, i.e., x_HeIII = 1.
@@ -600,11 +536,14 @@ class Hydrogen:
         Args:
             rho_b (float [ndarray]):  value of local baryon overdensity, i.e., (density / mean_density)
             T (float [ndarray]):      value of local gas temperature (in K)
+            rhob_clip (float [ndarray], optional):  value to clip the baryon overdensities to. Default is 1e3. Provide if the simulations are not accurate enough to capture structure formation at high overdensities. Otherwise set it to `None` for the use of the full range of overdensities.
 
         Returns: 
             nHI (float [ndarray]): number density of HI in cm^-3
             xHI (float [ndarray]): mass fraction of HI
         """
+        if rhob_clip is not None:
+            rho_b[rho_b > rhob_clip] = rhob_clip
         A   = self.eval_nH(rho_b)
         B   = A * (1 - self.X)/(2.*self.X)
         G_e = self.Gamma_coll(T)
@@ -619,29 +558,31 @@ class Hydrogen:
         return nHI, xHI 
 
 
-    def eval_HI(self, rho_b, T, mode = 'iterative', n_iter_iterative = 2):
+    def eval_HI(self, rho_b, T, mode = 'iterative', n_iter_iterative = 2, rhob_clip = 1e3):
         """
         Estimate the number density (in CGS) and mass fraction of neutral Hydrogen, given a baryon overdensity and a gas temperature.
 
         Args:
             rho_b (float [ndarray]):  value of local baryon overdensity, i.e., (density / mean_density)
             T (float [ndarray]):      value of local gas temperature (in K)
-            approximate (bool):       whether to use the approximation x_HeIII = 1 (faster if True) [Note: this flag wraps Hydrogen.eval_HI_approximately]
+            mode (str):               method for HI estimation, choose from 'approximate', 'iterative', and 'full'
+            n_iter_iterative (int, optional):  number of iterations to perform for the iterative method, default 2
+            rhob_clip (float [ndarray], optional):  value to clip the baryon overdensities to. Default is 1e3. Provide if the simulations are not accurate enough to capture structure formation at high overdensities. Otherwise set it to `None` for the use of the full range of overdensities.
 
         Returns: 
             nHI (float [ndarray]): number density of HI in cm^-3
             xHI (float [ndarray]): mass fraction of HI
         """
         if mode == 'approximate':
-            return self.eval_HI_approximately(rho_b, T)
+            return self.eval_HI_approximately(rho_b, T, rhob_clip = rhob_clip)
         elif mode == 'iterative':
-            fractions = self.IonEq.eval_fractions_iteratively(rho_b, T, n_iter = n_iter_iterative)
+            fractions = self.IonEq.eval_fractions_iteratively(rho_b, T, n_iter = n_iter_iterative, rhob_clip = rhob_clip)
             xHI       = fractions['x_HI']
             nH        = self.IonEq.nH
             return xHI*nH, xHI
         
         elif mode == 'full':
-            fractions = self.IonEq.eval_fractions(rho_b, T)
+            fractions = self.IonEq.eval_fractions(rho_b, T, rhob_clip = rhob_clip)
             xHI = fractions['x_HI']
             nH  = self.IonEq.nH
             return xHI*nH, xHI
@@ -678,12 +619,13 @@ class Helium:
         self.critical_density = self.IonEq.critical_density
         
 
-    def eval_nHe(self, rho_b):
+    def eval_nHe(self, rho_b, rhob_clip = 1e3):
         """
         Estimate the total number density (in CGS) of all Helium species, given a baryon overdensity rho_b
 
         Args:
-            rho_b (float [ndarray]): value of local baryon overdensity, i.e., (density / mean_density)
+            rho_b (float [ndarray]):                value of local baryon overdensity, i.e., (density / mean_density)
+            rhob_clip (float [ndarray], optional):  value to clip the baryon overdensities to. Default is 1e3. Provide if the simulations are not accurate enough to capture structure formation at high overdensities. Otherwise set it to `None` for the use of the full range of overdensities.
 
         Returns: 
             float [ndarray]: number density of He in cm^-3
@@ -691,48 +633,52 @@ class Helium:
         try:
             nHe = self.IonEq.nHe
         except:
+            if rhob_clip is not None:
+                rho_b[rho_b > rhob_clip] = rhob_clip
             Rho_b = rho_b * self.Omega_b * self.critical_density * (1 + self.z)**3
             nHe   = Rho_b * self.Y / (4. *mH) 
         return nHe
     
 
-    def eval_HeI(self, rho_b, T):
+    def eval_HeI(self, rho_b, T, iterative = False, n_iter_iterative = 2, rhob_clip = 1e3):
         """
         Estimate the number density (in CGS) and mass fraction of neutral Helium (HeI), given a baryon overdensity and a gas temperature.
 
         Args:
             rho_b (float [ndarray]):  value of local baryon overdensity, i.e., (density / mean_density)
             T (float [ndarray]):      value of local gas temperature (in K)
+            rhob_clip (float [ndarray], optional):  value to clip the baryon overdensities to. Default is 1e3. Provide if the simulations are not accurate enough to capture structure formation at high overdensities. Otherwise set it to `None` for the use of the full range of overdensities.
 
         Returns: 
             nHeI (float [ndarray]): number density of HeI in cm^-3
             xHeI (float [ndarray]): mass fraction of HeI
         """
-        try:
-            fractions = self.IonEq.fractions
-        except:
-            fractions = self.IonEq.eval_fractions(rho_b, T)
+        if iterative:
+            fractions = self.IonEq.eval_fractions_iteratively(rho_b, T, n_iter = n_iter_iterative, rhob_clip = rhob_clip)
+        else:
+            fractions = self.IonEq.eval_fractions(rho_b, T, rhob_clip = rhob_clip)
         xHeI          = fractions['x_HeI']
         nHe           = self.IonEq.nHe
         return xHeI*nHe, xHeI
     
 
-    def eval_HeII(self, rho_b, T):
+    def eval_HeII(self, rho_b, T, iterative = False, n_iter_iterative = 2, rhob_clip = 1e3):
         """
         Estimate the number density (in CGS) and mass fraction of singly-ionized Helium (HeII), given a baryon overdensity and a gas temperature.
 
         Args:
             rho_b (float [ndarray]):  value of local baryon overdensity, i.e., (density / mean_density)
             T (float [ndarray]):      value of local gas temperature (in K)
+            rhob_clip (float [ndarray], optional):  value to clip the baryon overdensities to. Default is 1e3. Provide if the simulations are not accurate enough to capture structure formation at high overdensities. Otherwise set it to `None` for the use of the full range of overdensities.
 
         Returns: 
             nHeII (float [ndarray]): number density of HeII in cm^-3
             xHeII (float [ndarray]): mass fraction of HeII
         """
-        try:
-            fractions = self.IonEq.fractions
-        except:
-            fractions = self.IonEq.eval_fractions(rho_b, T)
+        if iterative:
+            fractions = self.IonEq.eval_fractions_iteratively(rho_b, T, n_iter = n_iter_iterative, rhob_clip = rhob_clip)
+        else:
+            fractions = self.IonEq.eval_fractions(rho_b, T, rhob_clip = rhob_clip)
         xHeII         = fractions['x_HeII']
         nHe           = self.IonEq.nHe
         return xHeII*nHe, xHeII
@@ -790,7 +736,7 @@ class Lyman:
             raise NotImplementedError(f"Effective optical depth for {element} {transition} is not implemented yet. Currently supported: 'H lya'.")
 
 
-    def eval_tau_local(self, rho_b, T, n_neutral = None, element = 'H', transition = 'lya', nH1_mode = 'approximate', n_iter_iterative = 2):
+    def eval_tau_local(self, rho_b, T, n_neutral = None, element = 'H', transition = 'lya', nH1_mode = 'approximate', n_iter_iterative = 2, rhob_clip = 1e3):
         """
         Estimate the local optical depth of the given resonant Lyman series attenuation for the given element, from an absorber's baryon overdensity and gas temperature.
 
@@ -802,6 +748,7 @@ class Lyman:
             transition (str):         transition for which to estimate the resonant optical depth, options: 'lya', 'lyb'
             nH1_mode (str):           method to use for estimating the number density of HI, options: 'iterative', 'approximate', 'full'
             n_iter_iterative (int):   number of iterations to perform if choosing 'iterative' for `nH1_mode`
+            rhob_clip (float [ndarray], optional):  value to clip the baryon overdensities to. Default is 1e3. Provide if the simulations are not accurate enough to capture structure formation at high overdensities. Otherwise set it to `None` for the use of the full range of overdensities.
 
         Returns: 
             tau (float [ndarray]):    local resonant optical depth
@@ -811,14 +758,14 @@ class Lyman:
         C0        = np.pi * q_e**2 * f_lu * (lambda_0 * 1E-8) / (m_e * c_light * self.Hz)
         if n_neutral is None:
             if element == 'H':
-                n_neutral  = self.Hydrogen.eval_HI(rho_b, T, mode = nH1_mode, n_iter_iterative = n_iter_iterative)[0]  # number density of HI in cm^-3
+                n_neutral  = self.Hydrogen.eval_HI(rho_b, T, mode = nH1_mode, n_iter_iterative = n_iter_iterative, rhob_clip = rhob_clip)[0]  # number density of HI in cm^-3
             elif element == 'He':
-                n_neutral  = self.Helium.eval_HeI(rho_b, T)[0]
+                n_neutral  = self.Helium.eval_HeI(rho_b, T, rhob_clip = rhob_clip)[0]
         tau_local = C0 * n_neutral
         return tau_local
 
 
-    def eval_tau_skewer(self, rho_b, T, v_pec_los, n_neutral = None, element = 'H', transition = 'lya', profile = 'doppler', n_pix_out = None, nH1_mode = 'approximate', n_iter_iterative = 2, return_v_h_skewer = False):
+    def eval_tau_skewer(self, rho_b, T, v_pec_los, n_neutral = None, element = 'H', transition = 'lya', profile = 'doppler', n_pix_out = None, nH1_mode = 'approximate', n_iter_iterative = 2, return_v_h_skewer = False, rhob_clip = 1e3):
         """
         Estimate the optical depth of the given resonant Lyman series attenuation for the given element as a spectrum, from an absorber's baryon overdensity, gas temperature and the LOS component of its peculiar velocity along a skewer.
 
@@ -834,6 +781,7 @@ class Lyman:
             nH1_mode (str):           method to use for estimating the number density of HI, options: 'iterative', 'approximate', 'full'
             n_iter_iterative (int):   number of iterations to perform if choosing 'iterative' mode for nH1_mode
             return_v_h_skewer (bool): whether to return the Hubble flow velocity of the output spectrum, default: False
+            rhob_clip (float [ndarray], optional):  value to clip the baryon overdensities to. Default is 1e3. Provide if the simulations are not accurate enough to capture structure formation at high overdensities. Otherwise set it to `None` for the use of the full range of overdensities.
 
         Returns: 
             tau (ndarray):            resonant optical depth
@@ -844,9 +792,9 @@ class Lyman:
         C0 = np.pi * q_e**2 * f_lu * (lambda_0 * 1E-8) / (m_e * c_light * self.Hz)     # overall constant factor
         if n_neutral is None:
             if element == 'H':
-                n_neutral  = self.Hydrogen.eval_HI(rho_b, T, mode = nH1_mode, n_iter_iterative = n_iter_iterative)[0]    # number density of HI in cm^-3
+                n_neutral  = self.Hydrogen.eval_HI(rho_b, T, mode = nH1_mode, n_iter_iterative = n_iter_iterative, rhob_clip = rhob_clip)[0]    # number density of HI in cm^-3
             elif element == 'He':
-                n_neutral  = self.Helium.eval_HeI(rho_b, T)[0]
+                n_neutral  = self.Helium.eval_HeI(rho_b, T, rhob_clip = rhob_clip)[0]
 
         if n_pix_out is None:
             n_pix_out = len(v_pec_los)
@@ -935,16 +883,15 @@ class SummaryStats:
     """
     Class to compute summary statistics of a resonant attenuation (e.g. the Lyman-alpha forest) for a set of spectra
     """
-    def __init__(self, taus, v_h_spectrum):
+    def __init__(self, spectra, v_h_spectrum):
         """
         Initialize with a set of spectra to compute summary statistics for
 
         Args:
-            taus (ndarray):         array of optical depths, shape (N_spectra, N_pixels)
+            spectra (ndarray):      array of transmission spectra F = e^-tau, shape (N_spectra, N_pixels)
             v_h_spectrum (ndarray): 1d array of the hubble velocities along a spectrum in km/s, shape (N_pixels,)
         """
-        self.taus       = taus
-        self.fluxes     = np.exp(-taus)  
+        self.fluxes     = spectra
         self.v_h_skewer = v_h_spectrum
 
     def compute_p1d(self, F_mean = None, per_spectrum = True):
